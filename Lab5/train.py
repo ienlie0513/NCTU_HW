@@ -1,5 +1,6 @@
 import random
 import time
+import gc
 import math
 import torch
 from torch import optim
@@ -13,17 +14,17 @@ EOS_token = 1
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def asMinutes(s):
-	m = math.floor(s / 60)
-	s -= m * 60
-	return '%dm %ds' % (m, s)
+    m = math.floor(s / 60)
+    s -= m * 60
+    return '%dm %ds' % (m, s)
 
 
 def timeSince(since, percent):
-	now = time.time()
-	s = now - since
-	es = s / (percent)
-	rs = es - s
-	return '%s (- %s)' % (asMinutes(s), asMinutes(rs))
+    now = time.time()
+    s = now - since
+    es = s / (percent)
+    rs = es - s
+    return '%s (- %s)' % (asMinutes(s), asMinutes(rs))
 
 
 def show_result(scores, losses):  
@@ -33,55 +34,51 @@ def show_result(scores, losses):
     plt.figure(figsize=(10, 6))
     plt.ylabel("Loss")
     plt.xlabel("Epochs")
-    plt.title("Loss Curve", fontsize=18)
-    plt.plot(c_loss, label="Crossentropy Loss")
-    plt.legend()
+    plt.title("CrossEntropy Loss Curve", fontsize=18)
+    plt.plot(c_loss)
     plt.show()
     
     plt.figure(figsize=(10, 6))
     plt.ylabel("Loss")
     plt.xlabel("Epochs")
-    plt.title("Loss Curve", fontsize=18)
-    plt.plot(kl_loss, label="KL Loss")
-    plt.legend()
+    plt.title("KL Loss Curve", fontsize=18)
+    plt.plot(kl_loss)
     plt.show()
     
     plt.figure(figsize=(10, 6))
     plt.ylabel("Score")
     plt.xlabel("Epochs")
-    plt.title("Score Curve", fontsize=18)
-    plt.plot(bleu_score, label="BLEU Score")
-    plt.legend()
+    plt.title("BLEU Score Curve", fontsize=18)
+    plt.plot(bleu_score)
     plt.show()
     
     plt.figure(figsize=(10, 6))
     plt.ylabel("Score")
     plt.xlabel("Epochs")
-    plt.title("Score Curve", fontsize=18)
-    plt.plot(gaussian_score, label="Gaussian Score")
-    plt.legend()
+    plt.title("Gaussian Score Curve", fontsize=18)
+    plt.plot(gaussian_score)
     plt.show()
 
 
 def condition_embedding(condition_size, batch_size=1, condition=None):
     order = {'sp':0, 'tp':1, 'pg':2, 'p':3}
-    embedding = nn.Embedding(4, condition_size)
+    one_hot = {0:[1, 0, 0, 0], 1:[0, 1, 0, 0], 2:[0, 0, 1, 0], 3:[0, 0, 0, 1]}
     
     if condition != None:
-        condition_tensor = torch.tensor(condition)
-        embedded_tense = embedding(condition_tensor).view(1, -1)
+        embedded_tense = torch.tensor(one_hot[condition], dtype=torch.float).view(1, -1)
     else: 
         embedded_tense = []
         for o in order.values():
-            condition_tensor = torch.tensor(o)
-            embedded = embedding(condition_tensor).view(1, -1)
+            embedded = torch.tensor(one_hot[o], dtype=torch.float).view(1, -1)
             embedded_cp = embedded
+            
             # expand batch dim, (4, condition_size) to (4, batch_size, condition_size)
             for i in range(batch_size-1):
                 embedded = torch.cat((embedded, embedded_cp), 0)
             embedded_tense.append(embedded)
         
     return embedded_tense
+                     
 
 def reparameterize(mu, logvar):
     std = torch.exp(0.5*logvar)
@@ -91,15 +88,15 @@ def reparameterize(mu, logvar):
 def kl_annealing(epochs, mode):
     assert mode == "monotonic" or mode == "cyclical"
     if mode == "monotonic":
-        if epochs > 100:
-            KLD_weight = 1
+        if epochs > 500:
+            KLD_weight = 0.1
         else:
-            KLD_weight = 0.01 * epochs
+            KLD_weight = 0.0002 * epochs
     else:
-        if epochs%100 > 50:
-            KLD_weight = 1
+        if epochs%500 > 250: 
+            KLD_weight = 0.1
         else:
-            KLD_weight = 0.02 * (epochs%100)
+            KLD_weight = 0.0004 * (epochs%500) 
     return KLD_weight
 
 def compute_kl_loss(mu, logvar):
@@ -108,9 +105,10 @@ def compute_kl_loss(mu, logvar):
     return KLD
 
 
+# save model every epoch
 def train(input_tensors, encoder, decoder, encoder_optimizer, decoder_optimizer, 
           criterion, epochs, condition_size, teacher_forcing_ratio):
-    batch_size = input_tensors.size(0)
+    batch_size = input_tensors[0].size(0)
     # get 4 tense embedding tensor
     embedded_tenses = condition_embedding(condition_size, batch_size)
     
@@ -118,13 +116,12 @@ def train(input_tensors, encoder, decoder, encoder_optimizer, decoder_optimizer,
     kl_loss_total = 0
     ce_loss_total = 0
     
-    # transpose tensor from (batch_size, tense, seq_len) to (tense, seq_len, batch_size)
-    input_tensors = input_tensors.permute(1, 2, 0)
     
     # 4 tense iteration
     for index, embedded_tense in enumerate(embedded_tenses):
         # embedded_tense.to(device)
-        input_tensor = input_tensors[index] # (seq_len, batch_size)
+        input_tensor = input_tensors[index].to(device) 
+        input_tensor = input_tensor.transpose(0, 1) # (seq_len, batch_size)
     
         # init encoder hidden state and cat condition
         encoder_hidden = encoder.initHidden(embedded_tense, batch_size)
@@ -138,20 +135,18 @@ def train(input_tensors, encoder, decoder, encoder_optimizer, decoder_optimizer,
         loss = 0
         ce_loss = 0
 
-        #----------sequence to sequence part for encoder----------#
-        for ei in range(input_length):
-            encoder_output, encoder_hidden = encoder(
-                input_tensor[ei], encoder_hidden)
+        encoder_output, encoder_hidden = encoder(input_tensor, encoder_hidden)
             
         # reparameterization trick
         mu, logvar = encoder.variational(encoder_hidden)
         reparameterized_state = reparameterize(mu, logvar)
+        reparameterized_state = decoder.in_layer(reparameterized_state)
         
         # calculate kl loss
-        kl_loss = compute_kl_loss(mu, logvar)
+        kl_loss = compute_kl_loss(mu, logvar) / batch_size
         kl_loss_total += kl_loss
-        loss += kl_annealing(epochs, "monotonic") * kl_loss
-
+        loss += kl_annealing(epochs, "cyclical") * kl_loss
+        
         # init decoder hidden state and cat condition
         decoder_hidden = decoder.initHidden(reparameterized_state, embedded_tense, batch_size)
         
@@ -165,9 +160,10 @@ def train(input_tensors, encoder, decoder, encoder_optimizer, decoder_optimizer,
             for di in range(input_length):
                 decoder_output, decoder_hidden = decoder(
                     decoder_input, decoder_hidden) 
+                _, indx = torch.max(decoder_output, 1)
                 ce_loss += criterion(decoder_output, input_tensor[di])
                 decoder_input = input_tensor[di]  # Teacher forcing
-
+                
         else:
             # Without teacher forcing: use its own predictions as the next input
             for di in range(input_length):
@@ -177,8 +173,6 @@ def train(input_tensors, encoder, decoder, encoder_optimizer, decoder_optimizer,
                 decoder_input = topi.squeeze().detach()  # detach from history as input
 
                 ce_loss += criterion(decoder_output, input_tensor[di])
-#                 if decoder_input.item() == EOS_token:
-#                     break
 
         loss += ce_loss
         ce_loss_total += (ce_loss.item()/input_length)
@@ -218,7 +212,6 @@ def trainIters(encoder, decoder, vocab, n_iters, print_every=1000, plot_every=10
 
     for iter in range(1, n_iters + 1):
         for input_tensors in trainloader:
-            input_tensors = input_tensors.to(device)
 
             ce_loss, kl_loss = train(input_tensors, encoder, decoder, encoder_optimizer, decoder_optimizer, 
                                      criterion, (iter-1), condition_size, teacher_forcing_ratio)
@@ -231,10 +224,10 @@ def trainIters(encoder, decoder, vocab, n_iters, print_every=1000, plot_every=10
         bleu_score, gaussian_score = evaluate(encoder, decoder, vocab, laten_size=laten_size, condition_size=condition_size, plot_pred=False)
         bleu_scores.append(bleu_score)
         gaussian_scores.append(gaussian_score)
-        if bleu_score > 0.4 or (iter-1)%100 == 0:
+        if bleu_score > 0.8 and gaussian_score > 0.4:
             print ("Model save...")
-            torch.save(encoder, "./models/encoder_{}_{:.4f}.ckpt".format((iter-1), bleu_score))
-            torch.save(decoder, "./models/decoder_{}_{:.4f}.ckpt".format((iter-1), bleu_score))
+            torch.save(encoder, "./models/encoder_{:.4f}_{:.4f}_c.ckpt".format(gaussian_score, bleu_score))
+            torch.save(decoder, "./models/decoder_{:.4f}_{:.4f}_c.ckpt".format(gaussian_score, bleu_score))
 
         if iter % print_every == 0:
             print_ce_loss_avg = print_ce_loss_total / print_every
@@ -248,7 +241,7 @@ def trainIters(encoder, decoder, vocab, n_iters, print_every=1000, plot_every=10
         plot_ce_loss_total = 0
         kl_losses.append(plot_kl_loss_total)
         plot_kl_loss_total = 0
-            
-#     print ("The highest score is %s"%max_score)
+        
+        collected = gc.collect()
             
     return (bleu_scores, gaussian_scores), (crossentropy_losses, kl_losses)

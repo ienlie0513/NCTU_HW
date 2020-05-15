@@ -36,9 +36,9 @@ def BLEU_predict(encoder, decoder, vocab, batch_size=1, condition_size=8, plot_p
             target_tensor = testset[idx][1][1].to(device)
 
             batch_size = 1
-
+            
             # transpose tensor from (batch_size, tense, seq_len) to (tense, seq_len, batch_size)
-            input_tensor = input_tensor.view(-1, 1) # (seq_len, 1)
+            input_tensor = input_tensor.view(-1, 1) # (seq_len, batch_size)
             target_tensor = target_tensor.view(-1, 1)
 
             # init encoder hidden state and cat condition
@@ -49,19 +49,16 @@ def BLEU_predict(encoder, decoder, vocab, batch_size=1, condition_size=8, plot_p
             target_length = target_tensor.size(0)
             
 
-            #----------sequence to sequence part for encoder----------#
-            for ei in range(input_length):
-                encoder_output, encoder_hidden = encoder(
-                    input_tensor[ei], encoder_hidden)
+            encoder_output, encoder_hidden = encoder(input_tensor, encoder_hidden)
 
             # reparameterization trick
             mu, logvar = encoder.variational(encoder_hidden)
             reparameterized_state = reparameterize(mu, logvar)
-            
+            reparameterized_state = decoder.in_layer(reparameterized_state)
 
             # init decoder hidden state and cat condition
             decoder_hidden = decoder.initHidden(reparameterized_state, target_embedded_tense, batch_size)
-
+            
             decoder_input = torch.tensor([[SOS_token] for i in range(batch_size)], device=device)
             
             output = torch.zeros(target_length, batch_size)
@@ -81,7 +78,7 @@ def BLEU_predict(encoder, decoder, vocab, batch_size=1, condition_size=8, plot_p
 
     return outputs
 
-    # print the prediction and return the bleu score
+# print the prediction and return the bleu score
 def BLEU_score(prediction, plot_pred=False):
     data = getData('test')
 
@@ -120,7 +117,7 @@ def Gaussian_predict(encoder, decoder, vocab, batch_size=64, laten_size=32, cond
             output = torch.zeros(vocab.max_length, batch_size)
 
             # init decoder hidden state and cat condition
-            decoder_hidden = decoder.initHidden(laten_variable, embedded_tense, batch_size)
+            decoder_hidden = decoder.initHidden(decoder.in_layer(laten_variable), embedded_tense, batch_size)
 
             #----------sequence to sequence part for decoder----------#
             for di in range(vocab.max_length):
@@ -167,7 +164,7 @@ def Gaussian_score(predictions, plot_pred=False):
 
 def evaluate(encoder, decoder, vocab, batch_size=64, laten_size=32, condition_size=8, plot_pred=False):
     # predict train.txt for gaussian score
-    predictions = Gaussian_predict(encoder, decoder, vocab, batch_size=batch_size, condition_size=condition_size, plot_pred=plot_pred)
+    predictions = Gaussian_predict(encoder, decoder, vocab, batch_size=batch_size, laten_size=laten_size, condition_size=condition_size, plot_pred=plot_pred)
     
     # compute Gaussian score
     gaussian_score = Gaussian_score(predictions, plot_pred=plot_pred)

@@ -15,9 +15,8 @@ class EncoderRNN(nn.Module):
         self.embedding = nn.Embedding(input_size, hidden_size+condition_size)
         self.lstm = nn.LSTM(hidden_size+condition_size, hidden_size+condition_size)
 
-    def forward(self, input, hidden):
-        embedded = self.embedding(input).view(1, -1, self.hidden_size+self.condition_size)
-        output = embedded
+    def forward(self, inputs, hidden):
+        output = self.embedding(inputs)
         output, hidden = self.lstm(output, hidden)
         return output, hidden
     
@@ -31,11 +30,12 @@ class EncoderRNN(nn.Module):
                 torch.cat((zeros, embedded_tense), 2))
 
 class DecoderRNN(nn.Module):
-    def __init__(self, hidden_size, output_size, condition_size):
+    def __init__(self, latent_size, hidden_size, output_size, condition_size):
         super(DecoderRNN, self).__init__()
         self.hidden_size = hidden_size
         self.condition_size = condition_size
 
+        self.in_layer = nn.Linear(latent_size, hidden_size)
         self.embedding = nn.Embedding(output_size, hidden_size+condition_size)
         self.lstm = nn.LSTM(hidden_size+condition_size, hidden_size+condition_size)
         self.out = nn.Linear(hidden_size+condition_size, output_size)
